@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3001;
 
 // ================= MIDDLEWARE =================
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: 'https://jocular-semolina-7ebdaf.netlify.app',
   credentials: true
 }));
 app.use(express.json());
