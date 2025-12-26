@@ -63,6 +63,43 @@ app.get('/api/auth/verify', (req, res) => {
     res.status(401).json({ success: false });
   }
 });
+// ================= REGISTER =================
+app.post('/api/auth/register', (req, res) => {
+  const { email, password, name, plantId } = req.body;
+
+  if (!email || !password || !name || !plantId) {
+    return res.status(400).json({
+      success: false,
+      message: 'All fields are required'
+    });
+  }
+
+  const exists = users.find(u => u.email === email);
+  if (exists) {
+    return res.status(409).json({
+      success: false,
+      message: 'User already exists'
+    });
+  }
+
+  const newUser = {
+    id: users.length + 1,
+    email,
+    password, // ⚠️ plain for now (OK for demo)
+    name,
+    plantId
+  };
+
+  users.push(newUser);
+
+  const { password: _, ...safeUser } = newUser;
+
+  res.json({
+    success: true,
+    user: safeUser,
+    token: `token_${newUser.id}_${Date.now()}`
+  });
+});
 
 // ================= HTTP SERVER =================
 const server = http.createServer(app);
