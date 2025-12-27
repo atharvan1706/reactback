@@ -23,10 +23,20 @@ mongoose
   .catch(err => console.error('❌ MongoDB connection error:', err));
 
 // ================= MIDDLEWARE =================
-app.use(cors({
-  origin: 'https://reactfront-production-101d.up.railway.app',
-  credentials: true
-}));
+// Handle CORS + preflight requests
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', 'https://reactfront-production-101d.up.railway.app');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin,X-Requested-With,Content-Type,Accept,Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+
+  next();
+});
+
 app.use(express.json());
 
 // ================= AUTH: REGISTER =================
@@ -35,43 +45,23 @@ app.post('/api/auth/register', async (req, res) => {
     const { email, password, name, plantId } = req.body;
 
     if (!email || !password || !name || !plantId) {
-      return res.status(400).json({
-        success: false,
-        message: 'All fields are required'
-      });
+      return res.status(400).json({ success: false, message: 'All fields are required' });
     }
 
     const exists = await User.findOne({ email });
     if (exists) {
-      return res.status(409).json({
-        success: false,
-        message: 'User already exists'
-      });
+      return res.status(409).json({ success: false, message: 'User already exists' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = await User.create({
-      email,
-      password: hashedPassword,
-      name,
-      plantId
-    });
+    const user = await User.create({ email, password: hashedPassword, name, plantId });
 
-    const token = jwt.sign(
-      { id: user._id, plantId: user.plantId },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const token = jwt.sign({ id: user._id, plantId: user.plantId }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
     res.json({
       success: true,
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        plantId: user.plantId
-      },
+      user: { id: user._id, email: user.email, name: user.name, plantId: user.plantId },
       token
     });
   } catch (err) {
@@ -86,42 +76,20 @@ app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email and password required'
-      });
+      return res.status(400).json({ success: false, message: 'Email and password required' });
     }
 
     const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
+    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
+    if (!match) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
-    const token = jwt.sign(
-      { id: user._id, plantId: user.plantId },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const token = jwt.sign({ id: user._id, plantId: user.plantId }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
     res.json({
       success: true,
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        plantId: user.plantId
-      },
+      user: { id: user._id, email: user.email, name: user.name, plantId: user.plantId },
       token
     });
   } catch (err) {
@@ -133,10 +101,7 @@ app.post('/api/auth/login', async (req, res) => {
 // ================= AUTH: VERIFY =================
 app.get('/api/auth/verify', (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
-
-  if (!token) {
-    return res.status(401).json({ success: false });
-  }
+  if (!token) return res.status(401).json({ success: false });
 
   try {
     jwt.verify(token, process.env.JWT_SECRET);
@@ -145,51 +110,12 @@ app.get('/api/auth/verify', (req, res) => {
     res.status(401).json({ success: false });
   }
 });
-// ================= REGISTER =================
-app.post('/api/auth/register', (req, res) => {
-  const { email, password, name, plantId } = req.body;
-
-  if (!email || !password || !name || !plantId) {
-    return res.status(400).json({
-      success: false,
-      message: 'All fields are required'
-    });
-  }
-
-  const exists = users.find(u => u.email === email);
-  if (exists) {
-    return res.status(409).json({
-      success: false,
-      message: 'User already exists'
-    });
-  }
-
-  const newUser = {
-    id: users.length + 1,
-    email,
-    password, // ⚠️ plain for now (OK for demo)
-    name,
-    plantId
-  };
-
-  users.push(newUser);
-
-  const { password: _, ...safeUser } = newUser;
-
-  res.json({
-    success: true,
-    user: safeUser,
-    token: `token_${newUser.id}_${Date.now()}`
-  });
-});
 
 // ================= HTTP SERVER =================
 const server = http.createServer(app);
 
 // ================= WEBSOCKET SERVER =================
 const wss = new WebSocketServer({ server });
-
-// plantId -> ws
 const agents = new Map();
 
 wss.on('connection', (ws) => {
@@ -205,13 +131,8 @@ wss.on('connection', (ws) => {
         console.log(`✅ Agent registered: ${data.plantId}`);
       }
 
-      if (data.type === 'QUERY_RESPONSE') {
-        ws.lastResponse = data.payload;
-      }
-
-      if (data.type === 'LIVE_DATA') {
-        ws.lastLive = data.payload;
-      }
+      if (data.type === 'QUERY_RESPONSE') ws.lastResponse = data.payload;
+      if (data.type === 'LIVE_DATA') ws.lastLive = data.payload;
     } catch (err) {
       console.error('❌ WS error:', err.message);
     }
@@ -225,46 +146,28 @@ wss.on('connection', (ws) => {
   });
 });
 
-// ================= QUESTDB QUERY VIA AGENT =================
+// ================= QUESTDB QUERY =================
 app.get('/api/questdb/query', async (req, res) => {
   const { sql, plantId } = req.query;
 
-  if (!sql || !plantId) {
-    return res.status(400).json({
-      error: 'sql and plantId required'
-    });
-  }
+  if (!sql || !plantId) return res.status(400).json({ error: 'sql and plantId required' });
 
   const agent = agents.get(plantId);
-  if (!agent) {
-    return res.status(503).json({
-      error: `Agent for ${plantId} is offline`,
-      columns: [],
-      dataset: []
-    });
-  }
+  if (!agent) return res.status(503).json({ error: `Agent for ${plantId} is offline`, columns: [], dataset: [] });
 
-  agent.send(JSON.stringify({
-    type: 'EXEC_QUERY',
-    sql
-  }));
-
+  agent.send(JSON.stringify({ type: 'EXEC_QUERY', sql }));
   await new Promise(resolve => setTimeout(resolve, 500));
+
   res.json(agent.lastResponse || { columns: [], dataset: [] });
 });
 
 // ================= HEALTH =================
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    agents: [...agents.keys()],
-    time: new Date().toISOString()
-  });
+  res.json({ status: 'ok', agents: [...agents.keys()], time: new Date().toISOString() });
 });
 
 // ================= START =================
 server.listen(PORT, () => {
   console.log(`🚀 Backend running on http://localhost:${PORT}`);
   console.log(`🔌 WebSocket active on same port`);
-
 });
