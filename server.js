@@ -551,8 +551,8 @@ wss.on('connection', (ws) => {
   });
 });
 
-// ================= QUESTDB QUERY (Protected) =================
-app.get('/api/questdb/query', authenticateJWT, requirePlantAccess('operator'), async (req, res) => {
+// ================= QUESTDB QUERY (NO AUTH - LIKE OLD VERSION) =================
+app.get('/api/questdb/query', async (req, res) => {
   const { sql, plantId } = req.query;
 
   if (!sql || !plantId) {
