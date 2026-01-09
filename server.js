@@ -597,77 +597,67 @@ setInterval(() => {
   });
 }, 30000); // Check every 30 seconds
 
-// ================= QUESTDB QUERY (NOW WITH AUTH AND REQUEST TRACKING) =================
-app.get('/api/questdb/query', 
-  authenticateJWT,  // ✅ ADDED AUTH
-  async (req, res) => {
-    const { sql, plantId } = req.query;
-    const requestId = crypto.randomUUID();
+// TEMPORARY FIX - server.js snippet
+// Replace the questdb query endpoint with this version (NO AUTH for testing)
 
-    // Validate inputs
-    if (!sql || !plantId) {
-      return res.status(400).json({ 
-        error: 'sql and plantId required',
-        columns: [],
-        dataset: []
-      });
-    }
+// ================= QUESTDB QUERY (NO AUTH - TEMPORARY FOR TESTING) =================
+app.get('/api/questdb/query', async (req, res) => {
+  const { sql, plantId } = req.query;
+  const requestId = crypto.randomUUID();
 
-    // Check agent availability
-    const agent = agents.get(plantId);
-    if (!agent || !agent.isAlive) {
-      return res.status(503).json({ 
-        error: `Agent for ${plantId} is offline`, 
-        columns: [], 
-        dataset: [] 
-      });
-    }
-
-    // Check user access to plant
-    const user = await User.findById(req.userId);
-    if (!user || !user.hasPlantAccess(plantId, 'operator')) {
-      return res.status(403).json({
-        error: 'Insufficient permissions for this plant',
-        columns: [],
-        dataset: []
-      });
-    }
-
-    // Set timeout (configurable per query type)
-    const timeoutMs = 10000; // 10 seconds default
-
-    // Create promise for response
-    const responsePromise = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        pendingRequests.delete(requestId);
-        reject(new Error('Query timeout - agent did not respond in time'));
-      }, timeoutMs);
-
-      pendingRequests.set(requestId, { resolve, reject, timeout });
+  // Validate inputs
+  if (!sql || !plantId) {
+    return res.status(400).json({ 
+      error: 'sql and plantId required',
+      columns: [],
+      dataset: []
     });
-
-    // Send query to agent with request ID
-    try {
-      agent.send(JSON.stringify({ 
-        type: 'EXEC_QUERY', 
-        sql,
-        requestId 
-      }));
-
-      // Wait for response
-      const result = await responsePromise;
-      
-      res.json(result || { columns: [], dataset: [] });
-    } catch (error) {
-      console.error(`❌ Query error [${requestId}]:`, error.message);
-      res.status(500).json({ 
-        error: error.message,
-        columns: [], 
-        dataset: [] 
-      });
-    }
   }
-);
+
+  // Check agent availability
+  const agent = agents.get(plantId);
+  if (!agent || !agent.isAlive) {
+    return res.status(503).json({ 
+      error: `Agent for ${plantId} is offline`, 
+      columns: [], 
+      dataset: [] 
+    });
+  }
+
+  // Set timeout (configurable per query type)
+  const timeoutMs = 10000; // 10 seconds default
+
+  // Create promise for response
+  const responsePromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingRequests.delete(requestId);
+      reject(new Error('Query timeout - agent did not respond in time'));
+    }, timeoutMs);
+
+    pendingRequests.set(requestId, { resolve, reject, timeout });
+  });
+
+  // Send query to agent with request ID
+  try {
+    agent.send(JSON.stringify({ 
+      type: 'EXEC_QUERY', 
+      sql,
+      requestId 
+    }));
+
+    // Wait for response
+    const result = await responsePromise;
+    
+    res.json(result || { columns: [], dataset: [] });
+  } catch (error) {
+    console.error(`❌ Query error [${requestId}]:`, error.message);
+    res.status(500).json({ 
+      error: error.message,
+      columns: [], 
+      dataset: [] 
+    });
+  }
+});
 
 // ================= AGENT STATUS =================
 app.get('/api/questdb/agent-status/:plantId', authenticateJWT, async (req, res) => {
