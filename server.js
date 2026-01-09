@@ -1,4 +1,4 @@
-// backend/server.js - FIXED VERSION
+// backend/server.js - COMPLETE VERSION WITH DASHBOARD PERSISTENCE
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -11,6 +11,7 @@ import crypto from 'crypto';
 
 import User from './models/User.js';
 import InvitationCode from './models/InvitationCode.js';
+import Dashboard from './models/Dashboard.js'; // NEW IMPORT
 
 dotenv.config();
 
@@ -19,9 +20,9 @@ const PORT = process.env.PORT || 3001;
 const REQUIRE_ADMIN_APPROVAL = process.env.REQUIRE_ADMIN_APPROVAL === 'true';
 
 // ================= TRACKING MAPS =================
-const pendingRequests = new Map(); // requestId -> { resolve, reject, timeout }
-const agents = new Map(); // plantId -> ws connection
-const agentHealth = new Map(); // plantId -> { lastPing, isAlive }
+const pendingRequests = new Map();
+const agents = new Map();
+const agentHealth = new Map();
 
 // ================= DATABASE =================
 mongoose
@@ -33,7 +34,7 @@ mongoose
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'https://reactfront-production-101d.up.railway.app');
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
   res.header('Access-Control-Allow-Headers', 'Origin,X-Requested-With,Content-Type,Accept,Authorization');
 
   if (req.method === 'OPTIONS') {
@@ -45,7 +46,6 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Add request ID to all requests
 app.use((req, res, next) => {
   req.id = crypto.randomUUID();
   res.setHeader('X-Request-ID', req.id);
@@ -69,7 +69,6 @@ function authenticateJWT(req, res, next) {
   }
 }
 
-// Admin role check middleware
 function requireAdmin(req, res, next) {
   User.findById(req.userId)
     .then(user => {
@@ -84,7 +83,6 @@ function requireAdmin(req, res, next) {
     });
 }
 
-// Plant access check middleware
 function requirePlantAccess(requiredRole = 'operator') {
   return async (req, res, next) => {
     try {
@@ -120,7 +118,6 @@ function generateInvitationCode(plantId) {
 
 // ================= ADMIN: INVITATION MANAGEMENT =================
 
-// Generate invitation code
 app.post('/api/admin/invitations', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { plantId, role = 'operator', expiresInDays = 7, maxUses = 1 } = req.body;
@@ -157,7 +154,6 @@ app.post('/api/admin/invitations', authenticateJWT, requireAdmin, async (req, re
   }
 });
 
-// List invitations
 app.get('/api/admin/invitations', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { plantId, status } = req.query;
@@ -202,7 +198,6 @@ app.get('/api/admin/invitations', authenticateJWT, requireAdmin, async (req, res
   }
 });
 
-// Revoke invitation
 app.delete('/api/admin/invitations/:code', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { code } = req.params;
@@ -224,7 +219,6 @@ app.delete('/api/admin/invitations/:code', authenticateJWT, requireAdmin, async 
 
 // ================= ADMIN: USER MANAGEMENT =================
 
-// List all users
 app.get('/api/admin/users', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { plantId, status } = req.query;
@@ -257,7 +251,6 @@ app.get('/api/admin/users', authenticateJWT, requireAdmin, async (req, res) => {
   }
 });
 
-// Approve pending user
 app.post('/api/admin/users/:userId/approve', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -290,7 +283,6 @@ app.post('/api/admin/users/:userId/approve', authenticateJWT, requireAdmin, asyn
   }
 });
 
-// Suspend user
 app.post('/api/admin/users/:userId/suspend', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -306,6 +298,252 @@ app.post('/api/admin/users/:userId/suspend', authenticateJWT, requireAdmin, asyn
     res.json({ success: true, message: 'User suspended' });
   } catch (err) {
     console.error('❌ Suspend user error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ================= DASHBOARD CRUD OPERATIONS =================
+
+// GET all dashboards for the authenticated user
+app.get('/api/dashboards', authenticateJWT, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const plantIds = user.plantAccess.map(pa => pa.plantId);
+    
+    const dashboards = await Dashboard.find({
+      userId: req.userId,
+      plantId: { $in: plantIds }
+    }).sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      dashboards: dashboards.map(d => ({
+        id: d.id,
+        name: d.name,
+        plantId: d.plantId,
+        panels: d.panels,
+        isDefault: d.isDefault,
+        createdAt: d.createdAt,
+        updatedAt: d.updatedAt
+      }))
+    });
+  } catch (err) {
+    console.error('❌ Get dashboards error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// GET a specific dashboard
+app.get('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
+  try {
+    const { dashboardId } = req.params;
+    
+    const dashboard = await Dashboard.findOne({
+      id: dashboardId,
+      userId: req.userId
+    });
+
+    if (!dashboard) {
+      return res.status(404).json({ success: false, message: 'Dashboard not found' });
+    }
+
+    res.json({
+      success: true,
+      dashboard: {
+        id: dashboard.id,
+        name: dashboard.name,
+        plantId: dashboard.plantId,
+        panels: dashboard.panels,
+        isDefault: dashboard.isDefault,
+        createdAt: dashboard.createdAt,
+        updatedAt: dashboard.updatedAt
+      }
+    });
+  } catch (err) {
+    console.error('❌ Get dashboard error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// CREATE a new dashboard
+app.post('/api/dashboards', authenticateJWT, async (req, res) => {
+  try {
+    const { name, plantId, panels = [], isDefault = false } = req.body;
+
+    if (!name || !plantId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Name and plantId are required' 
+      });
+    }
+
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const hasAccess = user.plantAccess.some(pa => pa.plantId === plantId);
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'No access to this plant' 
+      });
+    }
+
+    if (isDefault) {
+      await Dashboard.updateMany(
+        { userId: req.userId, plantId },
+        { $set: { isDefault: false } }
+      );
+    }
+
+    const dashboardId = `dashboard_${Date.now()}`;
+    
+    const dashboard = await Dashboard.create({
+      id: dashboardId,
+      name,
+      userId: req.userId,
+      plantId,
+      panels,
+      isDefault
+    });
+
+    res.json({
+      success: true,
+      message: 'Dashboard created',
+      dashboard: {
+        id: dashboard.id,
+        name: dashboard.name,
+        plantId: dashboard.plantId,
+        panels: dashboard.panels,
+        isDefault: dashboard.isDefault,
+        createdAt: dashboard.createdAt,
+        updatedAt: dashboard.updatedAt
+      }
+    });
+  } catch (err) {
+    console.error('❌ Create dashboard error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// UPDATE a dashboard
+app.put('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
+  try {
+    const { dashboardId } = req.params;
+    const { name, panels, isDefault } = req.body;
+
+    const dashboard = await Dashboard.findOne({
+      id: dashboardId,
+      userId: req.userId
+    });
+
+    if (!dashboard) {
+      return res.status(404).json({ success: false, message: 'Dashboard not found' });
+    }
+
+    if (isDefault && !dashboard.isDefault) {
+      await Dashboard.updateMany(
+        { userId: req.userId, plantId: dashboard.plantId, id: { $ne: dashboardId } },
+        { $set: { isDefault: false } }
+      );
+    }
+
+    if (name !== undefined) dashboard.name = name;
+    if (panels !== undefined) dashboard.panels = panels;
+    if (isDefault !== undefined) dashboard.isDefault = isDefault;
+
+    await dashboard.save();
+
+    res.json({
+      success: true,
+      message: 'Dashboard updated',
+      dashboard: {
+        id: dashboard.id,
+        name: dashboard.name,
+        plantId: dashboard.plantId,
+        panels: dashboard.panels,
+        isDefault: dashboard.isDefault,
+        createdAt: dashboard.createdAt,
+        updatedAt: dashboard.updatedAt
+      }
+    });
+  } catch (err) {
+    console.error('❌ Update dashboard error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// DELETE a dashboard
+app.delete('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
+  try {
+    const { dashboardId } = req.params;
+
+    const dashboard = await Dashboard.findOne({
+      id: dashboardId,
+      userId: req.userId
+    });
+
+    if (!dashboard) {
+      return res.status(404).json({ success: false, message: 'Dashboard not found' });
+    }
+
+    await Dashboard.deleteOne({ id: dashboardId, userId: req.userId });
+
+    res.json({
+      success: true,
+      message: 'Dashboard deleted'
+    });
+  } catch (err) {
+    console.error('❌ Delete dashboard error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// BULK UPDATE panels for a dashboard
+app.patch('/api/dashboards/:dashboardId/panels', authenticateJWT, async (req, res) => {
+  try {
+    const { dashboardId } = req.params;
+    const { panels } = req.body;
+
+    if (!panels || !Array.isArray(panels)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Panels array is required' 
+      });
+    }
+
+    const dashboard = await Dashboard.findOne({
+      id: dashboardId,
+      userId: req.userId
+    });
+
+    if (!dashboard) {
+      return res.status(404).json({ success: false, message: 'Dashboard not found' });
+    }
+
+    dashboard.panels = panels;
+    await dashboard.save();
+
+    res.json({
+      success: true,
+      message: 'Panels updated',
+      dashboard: {
+        id: dashboard.id,
+        name: dashboard.name,
+        plantId: dashboard.plantId,
+        panels: dashboard.panels,
+        isDefault: dashboard.isDefault,
+        createdAt: dashboard.createdAt,
+        updatedAt: dashboard.updatedAt
+      }
+    });
+  } catch (err) {
+    console.error('❌ Update panels error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -534,7 +772,6 @@ wss.on('connection', (ws) => {
     try {
       const data = JSON.parse(msg.toString());
 
-      // ================= AGENT REGISTRATION =================
       if (data.type === 'REGISTER_AGENT') {
         ws.plantId = data.plantId;
         agents.set(data.plantId, ws);
@@ -545,7 +782,6 @@ wss.on('connection', (ws) => {
         console.log(`✅ Agent registered: ${data.plantId}`);
       }
 
-      // ================= QUERY RESPONSE WITH REQUEST ID =================
       if (data.type === 'QUERY_RESPONSE' && data.requestId) {
         const pending = pendingRequests.get(data.requestId);
         if (pending) {
@@ -557,7 +793,6 @@ wss.on('connection', (ws) => {
         }
       }
 
-      // ================= TABLES REFRESHED =================
       if (data.type === 'TABLES_REFRESHED') {
         ws.tableInfo = data.payload;
       }
@@ -595,17 +830,13 @@ setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   });
-}, 30000); // Check every 30 seconds
+}, 30000);
 
-// TEMPORARY FIX - server.js snippet
-// Replace the questdb query endpoint with this version (NO AUTH for testing)
-
-// ================= QUESTDB QUERY (NO AUTH - TEMPORARY FOR TESTING) =================
+// ================= QUESTDB QUERY =================
 app.get('/api/questdb/query', async (req, res) => {
   const { sql, plantId } = req.query;
   const requestId = crypto.randomUUID();
 
-  // Validate inputs
   if (!sql || !plantId) {
     return res.status(400).json({ 
       error: 'sql and plantId required',
@@ -614,7 +845,6 @@ app.get('/api/questdb/query', async (req, res) => {
     });
   }
 
-  // Check agent availability
   const agent = agents.get(plantId);
   if (!agent || !agent.isAlive) {
     return res.status(503).json({ 
@@ -624,10 +854,8 @@ app.get('/api/questdb/query', async (req, res) => {
     });
   }
 
-  // Set timeout (configurable per query type)
-  const timeoutMs = 10000; // 10 seconds default
+  const timeoutMs = 10000;
 
-  // Create promise for response
   const responsePromise = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingRequests.delete(requestId);
@@ -637,7 +865,6 @@ app.get('/api/questdb/query', async (req, res) => {
     pendingRequests.set(requestId, { resolve, reject, timeout });
   });
 
-  // Send query to agent with request ID
   try {
     agent.send(JSON.stringify({ 
       type: 'EXEC_QUERY', 
@@ -645,7 +872,6 @@ app.get('/api/questdb/query', async (req, res) => {
       requestId 
     }));
 
-    // Wait for response
     const result = await responsePromise;
     
     res.json(result || { columns: [], dataset: [] });
@@ -699,14 +925,12 @@ app.get('/api/health', (req, res) => {
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM received, cleaning up...');
   
-  // Clear all pending requests
   for (const [requestId, pending] of pendingRequests.entries()) {
     clearTimeout(pending.timeout);
     pending.reject(new Error('Server shutting down'));
   }
   pendingRequests.clear();
   
-  // Close all WebSocket connections
   wss.clients.forEach(ws => ws.close());
   
   server.close(() => {
@@ -722,4 +946,5 @@ server.listen(PORT, () => {
   console.log(`🔐 Admin approval required: ${REQUIRE_ADMIN_APPROVAL}`);
   console.log(`✅ Request correlation enabled`);
   console.log(`✅ Agent health monitoring enabled`);
+  console.log(`✅ Dashboard persistence enabled`);
 });
