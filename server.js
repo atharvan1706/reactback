@@ -1,4 +1,4 @@
-// backend/server.js
+// backend/server.js - FIXED VERSION
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -17,6 +17,11 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 const REQUIRE_ADMIN_APPROVAL = process.env.REQUIRE_ADMIN_APPROVAL === 'true';
+
+// ================= TRACKING MAPS =================
+const pendingRequests = new Map(); // requestId -> { resolve, reject, timeout }
+const agents = new Map(); // plantId -> ws connection
+const agentHealth = new Map(); // plantId -> { lastPing, isAlive }
 
 // ================= DATABASE =================
 mongoose
@@ -39,6 +44,13 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
+
+// Add request ID to all requests
+app.use((req, res, next) => {
+  req.id = crypto.randomUUID();
+  res.setHeader('X-Request-ID', req.id);
+  next();
+});
 
 // ================= AUTH MIDDLEWARE =================
 function authenticateJWT(req, res, next) {
@@ -262,8 +274,6 @@ app.post('/api/admin/users/:userId/approve', authenticateJWT, requireAdmin, asyn
     user.status = 'active';
     await user.save();
 
-    // TODO: Send email notification to user
-
     res.json({ 
       success: true, 
       message: 'User approved',
@@ -353,13 +363,11 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invitation code is required' });
     }
 
-    // Check if user exists
     const exists = await User.findOne({ email });
     if (exists) {
       return res.status(409).json({ success: false, message: 'User already exists' });
     }
 
-    // Validate invitation code
     const invitation = await InvitationCode.findOne({ code: invitationCode.toUpperCase() });
     
     if (!invitation || !invitation.isValid()) {
@@ -369,18 +377,14 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Determine initial status
     const status = REQUIRE_ADMIN_APPROVAL ? 'pending' : 'active';
 
-    // Create user with plant access
     const user = await User.create({
       email,
       password: hashedPassword,
       name,
-      plantId: invitation.plantId, // Legacy field
+      plantId: invitation.plantId,
       plantAccess: [{
         plantId: invitation.plantId,
         role: invitation.role,
@@ -391,7 +395,6 @@ app.post('/api/auth/register', async (req, res) => {
       invitationCode: invitation.code
     });
 
-    // Mark invitation as used
     invitation.timesUsed += 1;
     if (invitation.timesUsed >= invitation.maxUses) {
       invitation.usedBy = user._id;
@@ -399,7 +402,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
     await invitation.save();
 
-    // Generate token (even for pending users, they'll need it to check status)
     const token = jwt.sign(
       { id: user._id, plantId: invitation.plantId }, 
       process.env.JWT_SECRET, 
@@ -441,7 +443,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Check if account is suspended
     if (user.status === 'suspended') {
       return res.status(403).json({ 
         success: false, 
@@ -449,7 +450,6 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Check if account is pending
     if (user.status === 'pending') {
       return res.status(403).json({ 
         success: false, 
@@ -463,7 +463,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Update last login
     user.lastLogin = new Date();
     await user.save();
 
@@ -521,65 +520,208 @@ const server = http.createServer(app);
 
 // ================= WEBSOCKET SERVER =================
 const wss = new WebSocketServer({ server });
-const agents = new Map();
 
 wss.on('connection', (ws) => {
-  console.log('🔌 Agent connected');
+  console.log('🔌 Agent attempting connection');
+  
+  ws.isAlive = true;
+  
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
 
   ws.on('message', (msg) => {
     try {
       const data = JSON.parse(msg.toString());
 
+      // ================= AGENT REGISTRATION =================
       if (data.type === 'REGISTER_AGENT') {
         ws.plantId = data.plantId;
         agents.set(data.plantId, ws);
+        agentHealth.set(data.plantId, { 
+          lastPing: Date.now(), 
+          isAlive: true 
+        });
         console.log(`✅ Agent registered: ${data.plantId}`);
       }
 
-      if (data.type === 'QUERY_RESPONSE') ws.lastResponse = data.payload;
-      if (data.type === 'LIVE_DATA') ws.lastLive = data.payload;
+      // ================= QUERY RESPONSE WITH REQUEST ID =================
+      if (data.type === 'QUERY_RESPONSE' && data.requestId) {
+        const pending = pendingRequests.get(data.requestId);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          pending.resolve(data.payload);
+          pendingRequests.delete(data.requestId);
+        } else {
+          console.warn(`⚠️  Received response for unknown request: ${data.requestId}`);
+        }
+      }
+
+      // ================= TABLES REFRESHED =================
+      if (data.type === 'TABLES_REFRESHED') {
+        ws.tableInfo = data.payload;
+      }
+
     } catch (err) {
-      console.error('❌ WS error:', err.message);
+      console.error('❌ WS message error:', err.message);
     }
   });
 
   ws.on('close', () => {
     if (ws.plantId) {
       agents.delete(ws.plantId);
+      agentHealth.delete(ws.plantId);
       console.log(`❌ Agent disconnected: ${ws.plantId}`);
     }
   });
+
+  ws.on('error', (err) => {
+    console.error('❌ WS connection error:', err.message);
+  });
 });
 
-// ================= QUESTDB QUERY (NO AUTH - LIKE OLD VERSION) =================
-app.get('/api/questdb/query', async (req, res) => {
-  const { sql, plantId } = req.query;
+// ================= AGENT HEALTH MONITORING =================
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      if (ws.plantId) {
+        agents.delete(ws.plantId);
+        agentHealth.delete(ws.plantId);
+        console.log(`💀 Agent ${ws.plantId} died, terminating connection`);
+      }
+      return ws.terminate();
+    }
 
-  if (!sql || !plantId) {
-    return res.status(400).json({ error: 'sql and plantId required' });
-  }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000); // Check every 30 seconds
 
-  const agent = agents.get(plantId);
-  if (!agent) {
-    return res.status(503).json({ 
-      error: `Agent for ${plantId} is offline`, 
-      columns: [], 
-      dataset: [] 
+// ================= QUESTDB QUERY (NOW WITH AUTH AND REQUEST TRACKING) =================
+app.get('/api/questdb/query', 
+  authenticateJWT,  // ✅ ADDED AUTH
+  async (req, res) => {
+    const { sql, plantId } = req.query;
+    const requestId = crypto.randomUUID();
+
+    // Validate inputs
+    if (!sql || !plantId) {
+      return res.status(400).json({ 
+        error: 'sql and plantId required',
+        columns: [],
+        dataset: []
+      });
+    }
+
+    // Check agent availability
+    const agent = agents.get(plantId);
+    if (!agent || !agent.isAlive) {
+      return res.status(503).json({ 
+        error: `Agent for ${plantId} is offline`, 
+        columns: [], 
+        dataset: [] 
+      });
+    }
+
+    // Check user access to plant
+    const user = await User.findById(req.userId);
+    if (!user || !user.hasPlantAccess(plantId, 'operator')) {
+      return res.status(403).json({
+        error: 'Insufficient permissions for this plant',
+        columns: [],
+        dataset: []
+      });
+    }
+
+    // Set timeout (configurable per query type)
+    const timeoutMs = 10000; // 10 seconds default
+
+    // Create promise for response
+    const responsePromise = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        pendingRequests.delete(requestId);
+        reject(new Error('Query timeout - agent did not respond in time'));
+      }, timeoutMs);
+
+      pendingRequests.set(requestId, { resolve, reject, timeout });
     });
+
+    // Send query to agent with request ID
+    try {
+      agent.send(JSON.stringify({ 
+        type: 'EXEC_QUERY', 
+        sql,
+        requestId 
+      }));
+
+      // Wait for response
+      const result = await responsePromise;
+      
+      res.json(result || { columns: [], dataset: [] });
+    } catch (error) {
+      console.error(`❌ Query error [${requestId}]:`, error.message);
+      res.status(500).json({ 
+        error: error.message,
+        columns: [], 
+        dataset: [] 
+      });
+    }
   }
+);
 
-  agent.send(JSON.stringify({ type: 'EXEC_QUERY', sql }));
-  await new Promise(resolve => setTimeout(resolve, 500));
-
-  res.json(agent.lastResponse || { columns: [], dataset: [] });
+// ================= AGENT STATUS =================
+app.get('/api/questdb/agent-status/:plantId', authenticateJWT, async (req, res) => {
+  const { plantId } = req.params;
+  
+  const agent = agents.get(plantId);
+  const health = agentHealth.get(plantId);
+  
+  res.json({
+    plantId,
+    connected: !!agent,
+    isAlive: agent?.isAlive || false,
+    lastPing: health?.lastPing || null,
+    tableInfo: agent?.tableInfo || null
+  });
 });
 
 // ================= HEALTH =================
 app.get('/api/health', (req, res) => {
+  const agentStatuses = {};
+  
+  for (const [plantId, agent] of agents.entries()) {
+    agentStatuses[plantId] = {
+      connected: true,
+      isAlive: agent.isAlive,
+      health: agentHealth.get(plantId)
+    };
+  }
+
   res.json({ 
-    status: 'ok', 
-    agents: [...agents.keys()], 
-    time: new Date().toISOString() 
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    agents: agentStatuses,
+    pendingRequests: pendingRequests.size
+  });
+});
+
+// ================= CLEANUP ON SHUTDOWN =================
+process.on('SIGTERM', () => {
+  console.log('🛑 SIGTERM received, cleaning up...');
+  
+  // Clear all pending requests
+  for (const [requestId, pending] of pendingRequests.entries()) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error('Server shutting down'));
+  }
+  pendingRequests.clear();
+  
+  // Close all WebSocket connections
+  wss.clients.forEach(ws => ws.close());
+  
+  server.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
   });
 });
 
@@ -588,4 +730,6 @@ server.listen(PORT, () => {
   console.log(`🚀 Backend running on http://localhost:${PORT}`);
   console.log(`🔌 WebSocket active on same port`);
   console.log(`🔐 Admin approval required: ${REQUIRE_ADMIN_APPROVAL}`);
+  console.log(`✅ Request correlation enabled`);
+  console.log(`✅ Agent health monitoring enabled`);
 });
