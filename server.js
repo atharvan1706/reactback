@@ -402,6 +402,8 @@ app.post('/api/dashboards', authenticateJWT, async (req, res) => {
 
     const dashboard = await Dashboard.create({
       ...req.body,
+      id: req.body.id || crypto.randomUUID(), // Generate ID if not provided
+      userId: req.userId, // Add userId field
       createdBy: req.userId,
       plantId: plantId
     });
