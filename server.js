@@ -662,7 +662,11 @@ app.get('/api/auth/verify', authenticateJWT, async (req, res) => {
 const server = http.createServer(app);
 
 // ================= AGENT WEBSOCKET SERVER =================
-const wss = new WebSocketServer({ server, path: '/ws/agent' });
+const wss = new WebSocketServer({ 
+  server, 
+  path: '/ws/agent',
+  perMessageDeflate: false // Disable compression
+});
 
 wss.on('connection', (ws) => {
   console.log('🔌 Agent attempting connection');
@@ -731,7 +735,11 @@ wss.on('connection', (ws) => {
 });
 
 // ================= FRONTEND WEBSOCKET SERVER (NEW) =================
-const frontendWss = new WebSocketServer({ server, path: '/ws/live' });
+const frontendWss = new WebSocketServer({ 
+  server, 
+  path: '/ws/live',
+  perMessageDeflate: false // Disable compression
+});
 
 frontendWss.on('connection', (ws, req) => {
   const token = new URL(req.url, 'http://localhost').searchParams.get('token');
