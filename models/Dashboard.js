@@ -1,4 +1,4 @@
-// backend/models/Dashboard.js
+// backend/models/Dashboard.js - FIXED VERSION
 import mongoose from 'mongoose';
 
 const PanelSchema = new mongoose.Schema({
@@ -69,9 +69,9 @@ const DashboardSchema = new mongoose.Schema({
 });
 
 // Update the updatedAt timestamp before saving
-DashboardSchema.pre('save', function(next) {
+// FIXED: Removed 'next()' parameter since we're using async/await
+DashboardSchema.pre('save', function() {
   this.updatedAt = new Date();
-  next();
 });
 
 // Compound index for user and plant queries
