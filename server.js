@@ -1,5 +1,4 @@
-// backend/server.js - COMPLETE OPTIMIZED VERSION
-// ALL EXISTING FUNCTIONALITY + PERFORMANCE OPTIMIZATIONS
+// backend/server.js - COMPLETE VERSION WITH DASHBOARD PERSISTENCE
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -9,11 +8,10 @@ import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import compression from 'compression'; // NEW
 
 import User from './models/User.js';
 import InvitationCode from './models/InvitationCode.js';
-import Dashboard from './models/Dashboard.js';
+import Dashboard from './models/Dashboard.js'; // NEW IMPORT
 
 dotenv.config();
 
@@ -26,33 +24,6 @@ const pendingRequests = new Map();
 const agents = new Map();
 const agentHealth = new Map();
 
-// ================= QUERY DEDUPLICATION (NEW) =================
-const activeQueries = new Map();
-
-function deduplicateQuery(sql, plantId, executeFunc) {
-  const queryKey = `${plantId}:${sql}`;
-  
-  if (activeQueries.has(queryKey)) {
-    console.log(`📋 Dedup: ${queryKey.substring(0, 60)}...`);
-    return activeQueries.get(queryKey);
-  }
-  
-  const promise = executeFunc().finally(() => {
-    activeQueries.delete(queryKey);
-  });
-  
-  activeQueries.set(queryKey, promise);
-  return promise;
-}
-
-// ================= PERFORMANCE METRICS (NEW) =================
-const metrics = {
-  queryCount: 0,
-  errorCount: 0,
-  totalQueryTime: 0,
-  startTime: Date.now()
-};
-
 // ================= DATABASE =================
 mongoose
   .connect(process.env.MONGO_URI)
@@ -60,8 +31,6 @@ mongoose
   .catch(err => console.error('❌ MongoDB connection error:', err));
 
 // ================= MIDDLEWARE =================
-app.use(compression()); // NEW
-
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'https://reactfront-production-101d.up.railway.app');
   res.header('Access-Control-Allow-Credentials', 'true');
@@ -335,6 +304,7 @@ app.post('/api/admin/users/:userId/suspend', authenticateJWT, requireAdmin, asyn
 
 // ================= DASHBOARD CRUD OPERATIONS =================
 
+// GET all dashboards for the authenticated user
 app.get('/api/dashboards', authenticateJWT, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
@@ -367,6 +337,7 @@ app.get('/api/dashboards', authenticateJWT, async (req, res) => {
   }
 });
 
+// GET a specific dashboard
 app.get('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
   try {
     const { dashboardId } = req.params;
@@ -398,6 +369,7 @@ app.get('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
   }
 });
 
+// CREATE a new dashboard
 app.post('/api/dashboards', authenticateJWT, async (req, res) => {
   try {
     const { name, plantId, panels = [], isDefault = false } = req.body;
@@ -459,6 +431,7 @@ app.post('/api/dashboards', authenticateJWT, async (req, res) => {
   }
 });
 
+// UPDATE a dashboard
 app.put('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
   try {
     const { dashboardId } = req.params;
@@ -505,6 +478,7 @@ app.put('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
   }
 });
 
+// DELETE a dashboard
 app.delete('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
   try {
     const { dashboardId } = req.params;
@@ -530,6 +504,7 @@ app.delete('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => 
   }
 });
 
+// BULK UPDATE panels for a dashboard
 app.patch('/api/dashboards/:dashboardId/panels', authenticateJWT, async (req, res) => {
   try {
     const { dashboardId } = req.params;
@@ -857,11 +832,10 @@ setInterval(() => {
   });
 }, 30000);
 
-// ================= QUESTDB QUERY (OPTIMIZED WITH DEDUPLICATION) =================
+// ================= QUESTDB QUERY =================
 app.get('/api/questdb/query', async (req, res) => {
   const { sql, plantId } = req.query;
   const requestId = crypto.randomUUID();
-  const startTime = Date.now(); // NEW
 
   if (!sql || !plantId) {
     return res.status(400).json({ 
@@ -882,36 +856,27 @@ app.get('/api/questdb/query', async (req, res) => {
 
   const timeoutMs = 10000;
 
+  const responsePromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingRequests.delete(requestId);
+      reject(new Error('Query timeout - agent did not respond in time'));
+    }, timeoutMs);
+
+    pendingRequests.set(requestId, { resolve, reject, timeout });
+  });
+
   try {
-    // WRAPPED IN DEDUPLICATION
-    const result = await deduplicateQuery(sql, plantId, async () => {
-      const responsePromise = new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          pendingRequests.delete(requestId);
-          reject(new Error('Query timeout - agent did not respond in time'));
-        }, timeoutMs);
+    agent.send(JSON.stringify({ 
+      type: 'EXEC_QUERY', 
+      sql,
+      requestId 
+    }));
 
-        pendingRequests.set(requestId, { resolve, reject, timeout });
-      });
-
-      agent.send(JSON.stringify({ 
-        type: 'EXEC_QUERY', 
-        sql,
-        requestId 
-      }));
-
-      return await responsePromise;
-    });
-    
-    // NEW: Track metrics
-    metrics.queryCount++;
-    metrics.totalQueryTime += Date.now() - startTime;
+    const result = await responsePromise;
     
     res.json(result || { columns: [], dataset: [] });
   } catch (error) {
     console.error(`❌ Query error [${requestId}]:`, error.message);
-    metrics.errorCount++; // NEW
-    
     res.status(500).json({ 
       error: error.message,
       columns: [], 
@@ -956,32 +921,6 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ================= METRICS ENDPOINT (NEW) =================
-app.get('/api/metrics', (req, res) => {
-  const uptime = Date.now() - metrics.startTime;
-  const avgQueryTime = metrics.queryCount > 0 
-    ? metrics.totalQueryTime / metrics.queryCount 
-    : 0;
-
-  res.json({
-    uptime: Math.floor(uptime / 1000),
-    queries: {
-      total: metrics.queryCount,
-      errors: metrics.errorCount,
-      avgTime: Math.round(avgQueryTime),
-      qps: (metrics.queryCount / (uptime / 1000)).toFixed(2)
-    },
-    deduplication: {
-      active: activeQueries.size
-    },
-    agents: {
-      connected: agents.size,
-      plantIds: Array.from(agents.keys())
-    },
-    pending: pendingRequests.size
-  });
-});
-
 // ================= CLEANUP ON SHUTDOWN =================
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM received, cleaning up...');
@@ -1008,7 +947,4 @@ server.listen(PORT, () => {
   console.log(`✅ Request correlation enabled`);
   console.log(`✅ Agent health monitoring enabled`);
   console.log(`✅ Dashboard persistence enabled`);
-  console.log(`✅ Query deduplication enabled`); // NEW
-  console.log(`✅ Response compression enabled`); // NEW
-  console.log(`📊 Metrics at /api/metrics`); // NEW
 });
