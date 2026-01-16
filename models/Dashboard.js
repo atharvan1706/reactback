@@ -68,9 +68,20 @@ const DashboardSchema = new mongoose.Schema({
   }
 });
 
-// Update the updatedAt timestamp before saving
+// Update the updatedAt timestamp and filter invalid panels before saving
 DashboardSchema.pre('save', function() {
   this.updatedAt = new Date();
+  
+  // Filter out panels that are missing required fields
+  if (this.panels && Array.isArray(this.panels)) {
+    this.panels = this.panels.filter(panel => {
+      const isValid = panel && panel.id && panel.type && panel.title;
+      if (!isValid) {
+        console.warn('⚠️  Removing invalid panel:', panel);
+      }
+      return isValid;
+    });
+  }
 });
 
 // Compound index for user and plant queries
