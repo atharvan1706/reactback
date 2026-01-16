@@ -69,7 +69,6 @@ const DashboardSchema = new mongoose.Schema({
 });
 
 // Update the updatedAt timestamp before saving
-// FIXED: Removed 'next()' parameter since we're using async/await
 DashboardSchema.pre('save', function() {
   this.updatedAt = new Date();
 });
@@ -78,5 +77,4 @@ DashboardSchema.pre('save', function() {
 DashboardSchema.index({ userId: 1, plantId: 1 });
 
 const Dashboard = mongoose.model('Dashboard', DashboardSchema);
-
 export default Dashboard;
