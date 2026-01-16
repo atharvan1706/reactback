@@ -68,19 +68,24 @@ const DashboardSchema = new mongoose.Schema({
   }
 });
 
-// Update the updatedAt timestamp and filter invalid panels before saving
-DashboardSchema.pre('save', function() {
+// Filter invalid panels BEFORE validation runs
+DashboardSchema.pre('validate', function() {
   this.updatedAt = new Date();
   
   // Filter out panels that are missing required fields
   if (this.panels && Array.isArray(this.panels)) {
+    const originalLength = this.panels.length;
     this.panels = this.panels.filter(panel => {
       const isValid = panel && panel.id && panel.type && panel.title;
       if (!isValid) {
-        console.warn('⚠️  Removing invalid panel:', panel);
+        console.warn('⚠️  Removing invalid panel:', JSON.stringify(panel));
       }
       return isValid;
     });
+    
+    if (this.panels.length !== originalLength) {
+      console.log(`✅ Filtered panels: ${originalLength} -> ${this.panels.length}`);
+    }
   }
 });
 
