@@ -1,4 +1,4 @@
-// backend/server.js - COMPLETE VERSION WITH DASHBOARD PERSISTENCE
+// backend/server.js - COMPLETE VERSION WITH SCADA PERSISTENCE
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -11,7 +11,7 @@ import crypto from 'crypto';
 
 import User from './models/User.js';
 import InvitationCode from './models/InvitationCode.js';
-import Dashboard from './models/Dashboard.js'; // NEW IMPORT
+import Dashboard from './models/Dashboard.js';
 
 dotenv.config();
 
@@ -319,6 +319,8 @@ app.get('/api/dashboards', authenticateJWT, async (req, res) => {
       plantId: { $in: plantIds }
     }).sort({ createdAt: -1 });
 
+    console.log('📊 Fetched dashboards:', dashboards.length);
+
     res.json({
       success: true,
       dashboards: dashboards.map(d => ({
@@ -403,13 +405,28 @@ app.post('/api/dashboards', authenticateJWT, async (req, res) => {
 
     const dashboardId = `dashboard_${Date.now()}`;
     
+    // ✅ Process panels to ensure SCADA data is saved
+    const processedPanels = panels.map(panel => ({
+      ...panel,
+      scadaElements: panel.scadaElements || [],
+      scadaConnections: panel.scadaConnections || [],
+      scadaConfig: panel.scadaConfig || {}
+    }));
+    
     const dashboard = await Dashboard.create({
       id: dashboardId,
       name,
       userId: req.userId,
       plantId,
-      panels,
+      panels: processedPanels,
       isDefault
+    });
+
+    console.log('✅ Dashboard created:', {
+      id: dashboard.id,
+      name: dashboard.name,
+      panelsCount: dashboard.panels.length,
+      scadaPanels: dashboard.panels.filter(p => p.type === 'scada').length
     });
 
     res.json({
@@ -454,10 +471,29 @@ app.put('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => {
     }
 
     if (name !== undefined) dashboard.name = name;
-    if (panels !== undefined) dashboard.panels = panels;
+    
+    // ✅ Process panels to ensure SCADA data is preserved
+    if (panels !== undefined) {
+      dashboard.panels = panels.map(panel => ({
+        ...panel,
+        scadaElements: panel.scadaElements || [],
+        scadaConnections: panel.scadaConnections || [],
+        scadaConfig: panel.scadaConfig || {}
+      }));
+    }
+    
     if (isDefault !== undefined) dashboard.isDefault = isDefault;
 
     await dashboard.save();
+
+    console.log('✅ Dashboard updated:', {
+      id: dashboard.id,
+      panelsCount: dashboard.panels.length,
+      scadaPanels: dashboard.panels.filter(p => p.type === 'scada').length,
+      totalScadaElements: dashboard.panels
+        .filter(p => p.type === 'scada')
+        .reduce((sum, p) => sum + (p.scadaElements?.length || 0), 0)
+    });
 
     res.json({
       success: true,
@@ -504,7 +540,7 @@ app.delete('/api/dashboards/:dashboardId', authenticateJWT, async (req, res) => 
   }
 });
 
-// BULK UPDATE panels for a dashboard
+// ✅ BULK UPDATE panels for a dashboard - WITH SCADA PRESERVATION
 app.patch('/api/dashboards/:dashboardId/panels', authenticateJWT, async (req, res) => {
   try {
     const { dashboardId } = req.params;
@@ -526,8 +562,30 @@ app.patch('/api/dashboards/:dashboardId/panels', authenticateJWT, async (req, re
       return res.status(404).json({ success: false, message: 'Dashboard not found' });
     }
 
-    dashboard.panels = panels;
+    // ✅ CRITICAL: Preserve SCADA data when updating panels
+    dashboard.panels = panels.map(panel => ({
+      ...panel,
+      // Ensure SCADA fields are included
+      scadaElements: panel.scadaElements || [],
+      scadaConnections: panel.scadaConnections || [],
+      scadaConfig: panel.scadaConfig || {}
+    }));
+    
     await dashboard.save();
+
+    console.log('✅ Panels updated:', {
+      dashboardId: dashboard.id,
+      panelsCount: dashboard.panels.length,
+      scadaPanels: dashboard.panels.filter(p => p.type === 'scada').length,
+      scadaDetails: dashboard.panels
+        .filter(p => p.type === 'scada')
+        .map(p => ({
+          panelId: p.id,
+          title: p.title,
+          elements: p.scadaElements?.length || 0,
+          connections: p.scadaConnections?.length || 0
+        }))
+    });
 
     res.json({
       success: true,
@@ -544,6 +602,49 @@ app.patch('/api/dashboards/:dashboardId/panels', authenticateJWT, async (req, re
     });
   } catch (err) {
     console.error('❌ Update panels error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ✅ DEBUG endpoint to inspect SCADA data
+app.get('/api/dashboards/:dashboardId/scada-debug', authenticateJWT, async (req, res) => {
+  try {
+    const { dashboardId } = req.params;
+    
+    const dashboard = await Dashboard.findOne({
+      id: dashboardId,
+      userId: req.userId
+    });
+
+    if (!dashboard) {
+      return res.status(404).json({ success: false, message: 'Dashboard not found' });
+    }
+
+    const scadaPanels = dashboard.panels.filter(p => p.type === 'scada');
+    const debugInfo = {
+      dashboardId: dashboard.id,
+      dashboardName: dashboard.name,
+      totalPanels: dashboard.panels.length,
+      scadaPanelsCount: scadaPanels.length,
+      scadaPanels: scadaPanels.map(panel => ({
+        panelId: panel.id,
+        title: panel.title,
+        hasScadaElements: !!panel.scadaElements,
+        elementsCount: panel.scadaElements?.length || 0,
+        hasScadaConnections: !!panel.scadaConnections,
+        connectionsCount: panel.scadaConnections?.length || 0,
+        hasScadaConfig: !!panel.scadaConfig,
+        sampleElement: panel.scadaElements?.[0] || null,
+        sampleConnection: panel.scadaConnections?.[0] || null
+      }))
+    };
+
+    res.json({
+      success: true,
+      debug: debugInfo
+    });
+  } catch (err) {
+    console.error('❌ SCADA debug error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -946,5 +1047,5 @@ server.listen(PORT, () => {
   console.log(`🔐 Admin approval required: ${REQUIRE_ADMIN_APPROVAL}`);
   console.log(`✅ Request correlation enabled`);
   console.log(`✅ Agent health monitoring enabled`);
-  console.log(`✅ Dashboard persistence enabled`);
+  console.log(`✅ Dashboard persistence with SCADA support enabled`);
 });
