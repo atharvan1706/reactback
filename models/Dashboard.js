@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 
 const PanelSchema = new mongoose.Schema({
   id: { type: String, required: true },
-  type: { type: String, required: true },
+  type: { type: String, required: false }, // Made optional since frontend doesn't always send it
   title: { type: String, required: true },
   vizType: String,
   dataSource: String,
@@ -68,15 +68,23 @@ const DashboardSchema = new mongoose.Schema({
   }
 });
 
-// Filter invalid panels BEFORE validation runs
+// Auto-populate type from vizType if missing, then filter invalid panels
 DashboardSchema.pre('validate', function() {
   this.updatedAt = new Date();
   
-  // Filter out panels that are missing required fields
+  // Fix panels missing 'type' field by using 'vizType' or defaulting to 'chart'
   if (this.panels && Array.isArray(this.panels)) {
+    this.panels.forEach(panel => {
+      if (panel && !panel.type && panel.vizType) {
+        panel.type = 'chart'; // Default type for visualization panels
+        console.log(`✅ Auto-assigned type='chart' to panel: ${panel.id}`);
+      }
+    });
+    
+    // Now filter out any panels that are still invalid
     const originalLength = this.panels.length;
     this.panels = this.panels.filter(panel => {
-      const isValid = panel && panel.id && panel.type && panel.title;
+      const isValid = panel && panel.id && panel.title;
       if (!isValid) {
         console.warn('⚠️  Removing invalid panel:', JSON.stringify(panel));
       }
