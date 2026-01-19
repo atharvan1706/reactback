@@ -1,4 +1,4 @@
-// backend/models/Dashboard.js - FIXED VERSION
+// backend/models/Dashboard.js - FIXED VERSION WITH COMPLETE FIELD PERSISTENCE
 import mongoose from 'mongoose';
 
 const PanelSchema = new mongoose.Schema({
@@ -25,6 +25,19 @@ const PanelSchema = new mongoose.Schema({
   showGrid: Boolean,
   showDots: Boolean,
   transformations: [mongoose.Schema.Types.Mixed],
+  
+  // ✅ CRITICAL FIELDS THAT WERE MISSING
+  timezone: { type: String, default: 'UTC' },
+  yAxisScale: { type: String, default: 'auto' },
+  yAxisMin: { type: String, default: '' },
+  yAxisMax: { type: String, default: '' },
+  xAxisScale: { type: String, default: 'auto' },
+  timeRange: { type: String, default: 'all' },
+  timeRangeLast: { type: String, default: '1h' },
+  timeRangeStart: { type: String, default: '' },
+  timeRangeEnd: { type: String, default: '' },
+  filters: [mongoose.Schema.Types.Mixed],
+  
   // SCADA specific fields
   scadaElements: [mongoose.Schema.Types.Mixed],
   scadaConnections: [mongoose.Schema.Types.Mixed],
@@ -79,6 +92,18 @@ DashboardSchema.pre('validate', function() {
         panel.type = 'chart'; // Default type for visualization panels
         console.log(`✅ Auto-assigned type='chart' to panel: ${panel.id}`);
       }
+      
+      // ✅ Ensure critical fields have defaults if missing
+      if (panel.timezone === undefined) panel.timezone = 'UTC';
+      if (panel.yAxisScale === undefined) panel.yAxisScale = 'auto';
+      if (panel.yAxisMin === undefined) panel.yAxisMin = '';
+      if (panel.yAxisMax === undefined) panel.yAxisMax = '';
+      if (panel.xAxisScale === undefined) panel.xAxisScale = 'auto';
+      if (panel.timeRange === undefined) panel.timeRange = 'all';
+      if (panel.timeRangeLast === undefined) panel.timeRangeLast = '1h';
+      if (panel.timeRangeStart === undefined) panel.timeRangeStart = '';
+      if (panel.timeRangeEnd === undefined) panel.timeRangeEnd = '';
+      if (panel.filters === undefined) panel.filters = [];
     });
     
     // Now filter out any panels that are still invalid
