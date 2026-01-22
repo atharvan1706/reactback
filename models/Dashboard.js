@@ -1,4 +1,4 @@
-// backend/models/Dashboard.js - ENHANCED WITH AXIS CONFIGURATIONS
+// backend/models/Dashboard.js - FIXED: Add legendPosition field
 import mongoose from 'mongoose';
 
 const PanelSchema = new mongoose.Schema({
@@ -22,6 +22,7 @@ const PanelSchema = new mongoose.Schema({
   lineWidth: Number,
   fillOpacity: Number,
   showLegend: Boolean,
+  legendPosition: { type: String, default: 'top' }, // ✅ ADD THIS LINE
   showGrid: Boolean,
   showDots: Boolean,
   transformations: [mongoose.Schema.Types.Mixed],
@@ -38,7 +39,7 @@ const PanelSchema = new mongoose.Schema({
   timeRangeEnd: { type: String, default: '' },
   filters: [mongoose.Schema.Types.Mixed],
   
-  // ✅ NEW: Axis label configurations
+  // ✅ Axis label configurations
   xAxisLabel: { type: String, default: '' },
   yAxisLabel: { type: String, default: '' },
   xAxisLabelRotation: { type: Number, default: 0 },
@@ -50,7 +51,7 @@ const PanelSchema = new mongoose.Schema({
   xAxisShowTicks: { type: Boolean, default: true },
   yAxisShowTicks: { type: Boolean, default: true },
   
-  // ✅ NEW: Number formatting
+  // ✅ Number formatting
   yAxisNumberFormat: { type: String, default: 'number' },
   yAxisDecimals: { type: Number, default: 2 },
   yAxisUnit: { type: String, default: '' },
@@ -58,20 +59,20 @@ const PanelSchema = new mongoose.Schema({
   yAxisCustomFormat: { type: String, default: '' },
   yAxisUseCommas: { type: Boolean, default: true },
   
-  // ✅ NEW: Axis positioning
+  // ✅ Axis positioning
   yAxisWidth: { type: String, default: 'auto' },
   yAxisPosition: { type: String, default: 'left' },
   
-  // ✅ NEW: Grid customization
+  // ✅ Grid customization
   gridStrokeDashArray: { type: String, default: '3 3' },
   gridOpacity: { type: Number, default: 0.1 },
   
-  // ✅ NEW: Tick customization
+  // ✅ Tick customization
   xAxisTickCount: { type: String, default: 'auto' },
   yAxisTickCount: { type: String, default: 'auto' },
   xAxisTickInterval: { type: String, default: 'auto' },
   
-  // ✅ NEW: Font sizes
+  // ✅ Font sizes
   xAxisLabelFontSize: { type: Number, default: 12 },
   yAxisLabelFontSize: { type: Number, default: 12 },
   xAxisTickFontSize: { type: Number, default: 11 },
@@ -142,8 +143,9 @@ DashboardSchema.pre('validate', function() {
       if (panel.timeRangeStart === undefined) panel.timeRangeStart = '';
       if (panel.timeRangeEnd === undefined) panel.timeRangeEnd = '';
       if (panel.filters === undefined) panel.filters = [];
+      if (panel.legendPosition === undefined) panel.legendPosition = 'top'; // ✅ ADD THIS
       
-      // ✅ NEW: Axis configurations defaults
+      // ✅ Axis configurations defaults
       if (panel.xAxisLabel === undefined) panel.xAxisLabel = '';
       if (panel.yAxisLabel === undefined) panel.yAxisLabel = '';
       if (panel.xAxisLabelRotation === undefined) panel.xAxisLabelRotation = 0;
